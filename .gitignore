@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# VSCode
+.vscode/
+
+# JetBrains
+.idea/
+
+# Dataset files
+datasets/
+*.csv
+*.npy
+*.npz
+
+# ML models
+*.pth
+*.pt
+*.onnx
+*.xmodel
+
+# FPGA
+*.bit
+*.jou
+*.log
+*.str
+
+# Unity
+Library/
+Temp/
+Obj/
+Logs/
+Build/
+
+# OS
+.DS_Store
+Thumbs.db
