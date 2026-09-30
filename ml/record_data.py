@@ -1,9 +1,12 @@
+"""Record sensor data from the FireBeetle connected to the laptop via USB."""
+
 import serial
 import time
 import csv
-import os
+import math
 import re
 import argparse
+from pathlib import Path
 
 
 parser = argparse.ArgumentParser(description='Record gesture sensor data from FireBeetle connected to a system port.')
@@ -15,9 +18,16 @@ SERIAL_PORT = parser.parse_args().serial_port
 # GESTURES = ['pinch', 'release', 'enter_paint', 'select_paint', 'exit_paint', 'gun', 'shoot']
 GESTURES = ['pinch', 'release', 'enter_paint', 'gun', 'shoot'] # for now
 EXPECTED_SENSOR_FIELDS = 11
+CSV_HEADERS = [
+    'sample_index',
+    'label',
+    'accel_x', 'accel_y', 'accel_z',
+    'gyro_x', 'gyro_y', 'gyro_z',
+    'flex_1', 'flex_2', 'flex_3', 'flex_4', 'flex_5',
+]
 
 NUM_TRIALS_PER_GESTURE = 10
-DATA_DIRECTORY = './data'
+DATA_DIRECTORY = Path('./data')
 
 GESTURE_DESCRIPTIONS = {
     'pinch': 'From a relaxed state, perform a pinching motion when the countdown ends',
@@ -27,14 +37,16 @@ GESTURE_DESCRIPTIONS = {
     'shoot': 'From the gun pose, perform a shooting motion when the countdown ends'
 }
 
+assert len(CSV_HEADERS) - 2 == EXPECTED_SENSOR_FIELDS, "Headers do not match number of sensor fields"
+
 def get_dataset_number():
     highest_number = 0
-    if os.path.isdir(DATA_DIRECTORY):
-        for name in os.listdir(DATA_DIRECTORY):
-            if re.fullmatch(r'd\d+', name) and os.path.isdir(os.path.join(DATA_DIRECTORY, name)):
-                highest_number = max(highest_number, int(name[1:]))
+    if DATA_DIRECTORY.is_dir():
+        for path in DATA_DIRECTORY.iterdir():
+            if re.fullmatch(r'd\d+', path.name) and path.is_dir():
+                highest_number = max(highest_number, int(path.name[1:]))
     else:
-        os.mkdir(DATA_DIRECTORY)
+        DATA_DIRECTORY.mkdir()
     return highest_number + 1
 
 DATASET_NUMBER = get_dataset_number()
@@ -42,11 +54,12 @@ DATASET_NUMBER = get_dataset_number()
 def write_to_file(data, file):
     with open(file, 'w', newline='') as f:
         writer = csv.writer(f)
+        writer.writerow(CSV_HEADERS)
         writer.writerows(data)
 
 ## Main code starts here ##
 
-os.makedirs(os.path.join(DATA_DIRECTORY, f'{DATASET_NUMBER:02d}'), exist_ok=True)
+(DATA_DIRECTORY / f'{DATASET_NUMBER:02d}').mkdir(parents=True, exist_ok=True)
 
 with serial.Serial(SERIAL_PORT, baudrate=115200, timeout=0.1) as ser:
     time.sleep(2)
@@ -62,7 +75,7 @@ with serial.Serial(SERIAL_PORT, baudrate=115200, timeout=0.1) as ser:
         time.sleep(5)
 
         for i in range(NUM_TRIALS_PER_GESTURE):
-            file = 'd' + f'{DATASET_NUMBER:02d}' + '_' + f'{number_of_runs:04d}' + '.csv'
+            file = DATA_DIRECTORY / f'd{DATASET_NUMBER:02d}_{number_of_runs:04d}.csv'
 
             print(f"Recording {gesture} gesture, trial {i}/{NUM_TRIALS_PER_GESTURE}... Standby")
             time.sleep(2)
@@ -79,6 +92,7 @@ with serial.Serial(SERIAL_PORT, baudrate=115200, timeout=0.1) as ser:
             start_time = time.perf_counter()
             is_go_printed = False
             data = []
+            sample_index = 0
 
             while time.perf_counter() - start_time < 1.5:
                 if time.perf_counter() - start_time >= 0.5 and not is_go_printed:
@@ -92,7 +106,18 @@ with serial.Serial(SERIAL_PORT, baudrate=115200, timeout=0.1) as ser:
                     fields = [field.strip() for field in decoded_line.split(",")]
 
                     if len(fields) == EXPECTED_SENSOR_FIELDS:
-                        data.append([time.perf_counter(), gesture, *fields])
+                        try:
+                            sensor_values = [float(field) for field in fields]
+                        except ValueError:
+                            print(f"Skipping non-numeric reading: {decoded_line!r}")
+                            continue
+
+                        if not all(math.isfinite(value) for value in sensor_values):
+                            print(f"Skipping non-finite reading: {decoded_line!r}")
+                            continue
+
+                        data.append([sample_index, gesture, *sensor_values])
+                        sample_index += 1
                     else:
                         print(f"Skipping malformed reading: {decoded_line!r}")
 
