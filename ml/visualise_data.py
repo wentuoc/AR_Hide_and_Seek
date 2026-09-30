@@ -7,37 +7,43 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
+CSV_HEADERS = [
+	"sample_index", "label",
+	"accel_x", "accel_y", "accel_z",
+	"gyro_x", "gyro_y", "gyro_z",
+	"flex_1", "flex_2", "flex_3", "flex_4", "flex_5",
+]
+SENSOR_HEADERS = CSV_HEADERS[2:]
+
+
 def load_csv(csv_path):
 	with csv_path.open("r", newline="") as file:
-		reader = csv.DictReader(file)
-		if reader.fieldnames is None:
-			raise ValueError("The CSV file is missing a header.")
-
-		# expected_headers = [
-		# 	"sample_index", "label",
-		# 	"accel_x", "accel_y", "accel_z",
-		# 	"gyro_x", "gyro_y", "gyro_z",
-		# 	"flex_1", "flex_2", "flex_3", "flex_4", "flex_5",
-		# ]
-		# if reader.fieldnames != expected_headers:
-		# 	raise ValueError(
-		# 		f"Expected CSV headers {expected_headers}, "
-		# 		f"but found {reader.fieldnames}."
-		# 	)
-
-		rows = list(reader)
+		rows = list(csv.reader(file))
 
 	if not rows:
-		raise ValueError("The CSV file contains no data rows.")
+		raise ValueError("The CSV file is empty.")
 
-	labels = [row["label"] for row in rows]
-	sample_indices = [int(row["sample_index"]) for row in rows]
-	sensor_headers = reader.fieldnames[2:]
-	values = [
-		[float(row[header]) for header in sensor_headers]
-		for row in rows
-	]
-	return labels, sample_indices, values, sensor_headers
+	if rows[0] == CSV_HEADERS:
+		data_rows = rows[1:]
+		if not data_rows:
+			raise ValueError("The CSV file contains no data rows.")
+		if any(len(row) != len(CSV_HEADERS) for row in data_rows):
+			raise ValueError("A headered row has an invalid number of columns.")
+		labels = [row[1] for row in data_rows]
+		sample_indices = [int(row[0]) for row in data_rows]
+		values = [[float(value) for value in row[2:]] for row in data_rows]
+		return labels, sample_indices, values, SENSOR_HEADERS
+
+	# Legacy recordings contain label followed by the 11 sensor values.
+	if any(len(row) != len(CSV_HEADERS) - 1 for row in rows):
+		raise ValueError(
+			"Expected the new headered format or legacy rows with "
+			"one label and 11 sensor values."
+		)
+	labels = [row[0] for row in rows]
+	sample_indices = list(range(len(rows)))
+	values = [[float(value) for value in row[1:]] for row in rows]
+	return labels, sample_indices, values, SENSOR_HEADERS
 
 
 def main():

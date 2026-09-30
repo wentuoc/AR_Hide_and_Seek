@@ -11,9 +11,10 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description='Record gesture sensor data from FireBeetle connected to a system port.')
 parser.add_argument('serial_port', nargs='?', default='COM5', help='serial port to use (default: COM5)')
-parser.add_argument('-n', '--num_trials', default=10, help='Number of trials per gesture (default: 10)')
+parser.add_argument('-n', '--num_trials', type=int, default=10, help='Number of trials per gesture (default: 10)')
 
-SERIAL_PORT = parser.parse_args().serial_port
+ARGS = parser.parse_args()
+SERIAL_PORT = ARGS.serial_port
 
 # GESTURES = ['pinch', 'release', 'enter_paint', 'select_paint', 'exit_paint', 'gun', 'shoot']
 GESTURES = ['pinch', 'release', 'enter_paint', 'gun', 'shoot'] # for now
@@ -26,8 +27,8 @@ CSV_HEADERS = [
     'flex_1', 'flex_2', 'flex_3', 'flex_4', 'flex_5',
 ]
 
-NUM_TRIALS_PER_GESTURE = 10
-DATA_DIRECTORY = Path('./data')
+NUM_TRIALS_PER_GESTURE = ARGS.num_trials
+DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "raw"
 
 GESTURE_DESCRIPTIONS = {
     'pinch': 'From a relaxed state, perform a pinching motion when the countdown ends',
@@ -121,7 +122,6 @@ with serial.Serial(SERIAL_PORT, baudrate=115200, timeout=0.1) as ser:
                     else:
                         print(f"Skipping malformed reading: {decoded_line!r}")
 
-            print(data) # for now
             write_to_file(data, file)
             number_of_runs += 1
 
