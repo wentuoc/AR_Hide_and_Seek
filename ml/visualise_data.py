@@ -11,7 +11,7 @@ CSV_HEADERS = [
 	"sample_index", "label",
 	"accel_x", "accel_y", "accel_z",
 	"gyro_x", "gyro_y", "gyro_z",
-	"flex_1", "flex_2", "flex_3", "flex_4", "flex_5",
+	"flex_1", "flex_2", "flex_3", "flex_4", "flex_0",
 ]
 SENSOR_HEADERS = CSV_HEADERS[2:]
 
@@ -23,16 +23,19 @@ def load_csv(csv_path):
 	if not rows:
 		raise ValueError("The CSV file is empty.")
 
-	if rows[0] == CSV_HEADERS:
+	if len(rows[0]) >= 2 and rows[0][0] == "sample_index" and rows[0][1] == "label":
+		header_row = rows[0]
+		if len(header_row) < 3:
+			raise ValueError("The header row must include at least one sensor column.")
 		data_rows = rows[1:]
 		if not data_rows:
 			raise ValueError("The CSV file contains no data rows.")
-		if any(len(row) != len(CSV_HEADERS) for row in data_rows):
+		if any(len(row) != len(header_row) for row in data_rows):
 			raise ValueError("A headered row has an invalid number of columns.")
 		labels = [row[1] for row in data_rows]
 		sample_indices = [int(row[0]) for row in data_rows]
 		values = [[float(value) for value in row[2:]] for row in data_rows]
-		return labels, sample_indices, values, SENSOR_HEADERS
+		return labels, sample_indices, values, header_row[2:]
 
 	# Legacy recordings contain label followed by the 11 sensor values.
 	if any(len(row) != len(CSV_HEADERS) - 1 for row in rows):
@@ -48,12 +51,12 @@ def load_csv(csv_path):
 
 def main():
 	parser = argparse.ArgumentParser(description="Plot values from a CSV file.")
-	parser.add_argument("csv_file", help="CSV filename, relative to the data directory")
+	parser.add_argument("csv_file", help="CSV filename, relative to the ml directory")
 	args = parser.parse_args()
 
 	csv_path = Path(args.csv_file)
 	if not csv_path.is_absolute():
-		csv_path = Path(__file__).resolve().parent / "data" / csv_path
+		csv_path = Path(__file__).resolve().parent / csv_path
 
 	labels, sample_indices, values, headers = load_csv(csv_path)
 	groups = [
@@ -78,7 +81,7 @@ def main():
 		axis.grid(True, alpha=0.3)
 		axis.legend()
 
-	axes[-1].set_xlabel("Row")
+	axes[-1].set_xlabel("sample_index")
 	figure.tight_layout()
 	plt.show()
 
