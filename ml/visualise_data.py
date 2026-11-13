@@ -5,6 +5,7 @@ import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import torch
 
 
 CSV_HEADERS = [
@@ -16,11 +17,17 @@ CSV_HEADERS = [
 SENSOR_HEADERS = CSV_HEADERS[2:]
 
 RAW_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "raw"
+AUGMENTED_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "augmented"
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Plot values from a CSV file.")
-    parser.add_argument("--file", help="CSV filename, relative to the ml/data/raw directory")
+    parser.add_argument("--file", help="File to visualise, relative to the selected data directory")
     parser.add_argument("--auto", action="store_true", help="Loop through all csv files and visualise them")
+    parser.add_argument(
+        "--augmented",
+        action="store_true",
+        help="Visualise .pt windows from ml/data/augmented instead of raw CSV files",
+    )
     args = parser.parse_args()
     return args
 
@@ -58,21 +65,40 @@ def load_csv(csv_path):
 	return labels, sample_indices, values, SENSOR_HEADERS
 
 
+def load_pt(pt_path):
+	sample = torch.load(pt_path, weights_only=True)
+	data = sample["data"].float()
+	if data.shape != (20, 11):
+		raise ValueError(f"Expected augmented sample shape (20, 11), got {tuple(data.shape)}")
+	return (
+		[sample.get("label", "unknown")] * data.shape[0],
+		list(range(data.shape[0])),
+		data.tolist(),
+		SENSOR_HEADERS,
+	)
+
+
 def main():
 	args = parse_arguments()
+	data_directory = (
+		AUGMENTED_DATA_DIRECTORY if args.augmented else RAW_DATA_DIRECTORY
+	)
+	file_suffix = "*.pt" if args.augmented else "*.csv"
 
 	if args.auto:
-		data_dir = RAW_DATA_DIRECTORY
 		csv_paths = sorted(
-			path for path in data_dir.rglob("*.csv") if "archive" not in str(path).lower()
+			path for path in data_directory.rglob(file_suffix)
+			if "archive" not in str(path).lower()
 		)
 		if not csv_paths:
-			raise FileNotFoundError(f"No CSV files found in {data_dir}")
-		print("Controls to visualise next csv file (waxd): w = -10, a = -1, x = +10, d = +1 files")
+			raise FileNotFoundError(f"No {file_suffix[1:].upper()} files found in {data_directory}")
+		print("Controls to visualise next file: w = -10, a = -1, x = +10, d = +1")
 	else:
+		if not args.file:
+			raise ValueError("--file is required unless --auto is set")
 		csv_path = Path(args.file)
 		if not csv_path.is_absolute():
-			csv_path = RAW_DATA_DIRECTORY / csv_path
+			csv_path = data_directory / csv_path
 		csv_paths = [csv_path]
 
 	file_index = 0
@@ -96,7 +122,10 @@ def main():
 
 	while 0 <= file_index < len(csv_paths) and not action["closed"]:
 		csv_path = csv_paths[file_index]
-		labels, sample_indices, values, headers = load_csv(csv_path)
+		if args.augmented:
+			labels, sample_indices, values, headers = load_pt(csv_path)
+		else:
+			labels, sample_indices, values, headers = load_csv(csv_path)
 		groups = [
 			(0, 3, "Accelero"),
 			(3, 6, "Gyro"),
