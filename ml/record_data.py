@@ -1,4 +1,8 @@
-"""Record sensor data from the FireBeetle connected to the laptop via USB."""
+"""
+Record sensor data from the FireBeetle connected to the laptop via USB.
+DEPRECATED - DO NOT USE. Please use record_data_wifi.py instead for 
+recording over WiFi.
+"""
 
 import serial
 import time
