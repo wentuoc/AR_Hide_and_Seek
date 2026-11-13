@@ -32,7 +32,7 @@ CSV_HEADERS = [
     'flex_1', 'flex_2', 'flex_3', 'flex_4', 'flex_0', # N.B. flex_0 is thumb
 ]
 
-DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "raw"
+RAW_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "raw"
 
 GESTURE_DESCRIPTIONS = {
     'drop': 'Flick the hand forward while rapidly uncurling all fingers',
@@ -77,12 +77,12 @@ NUM_TRIALS_PER_GESTURE = ARGS.num_trials
 
 def get_dataset_number():
     highest_number = 0
-    if DATA_DIRECTORY.is_dir():
-        for path in DATA_DIRECTORY.iterdir():
+    if RAW_DATA_DIRECTORY.is_dir():
+        for path in RAW_DATA_DIRECTORY.iterdir():
             if re.fullmatch(r'd\d+', path.name) and path.is_dir():
                 highest_number = max(highest_number, int(path.name[1:]))
     else:
-        DATA_DIRECTORY.mkdir()
+        RAW_DATA_DIRECTORY.mkdir()
     return highest_number + 1
 
 def get_csv_file_count(dataset_directory):
@@ -100,7 +100,7 @@ def write_to_file(data, file):
         writer.writerows(data)
 
 def write_data_record_log(dataset_directory):
-    with open(DATA_DIRECTORY / "data_record_log.txt", 'a', newline='') as f:
+    with open(RAW_DATA_DIRECTORY / "data_record_log.txt", 'a', newline='') as f:
         f.write(f"d{DATASET_NUMBER:02d} - {datetime.now().strftime('%d%m%y-%H:%M')}, "
                 f"{ARGS.name}, {NUM_TRIALS_PER_GESTURE} trials, "
                 f"{get_csv_file_count(dataset_directory)} files saved, "
@@ -136,7 +136,7 @@ def receive_with_reconnect(records, receiver_writer, receiver_output, stop_event
 ## Main code starts here ##
 
 def main():
-    dataset_directory = DATA_DIRECTORY / f'd{DATASET_NUMBER:02d}'
+    dataset_directory = RAW_DATA_DIRECTORY / f'd{DATASET_NUMBER:02d}'
 
     records = queue.Queue()
     (dataset_directory).mkdir(parents=True, exist_ok=True)
@@ -165,7 +165,7 @@ def main():
                 time.sleep(5)
 
                 for i in range(NUM_TRIALS_PER_GESTURE):
-                    file = DATA_DIRECTORY / f'd{DATASET_NUMBER:02d}' / f'd{DATASET_NUMBER:02d}_{number_of_runs:04d}.csv'
+                    file = RAW_DATA_DIRECTORY / f'd{DATASET_NUMBER:02d}' / f'd{DATASET_NUMBER:02d}_{number_of_runs:04d}.csv'
 
                     print(f"Recording {gesture} gesture, trial {i+1}/{NUM_TRIALS_PER_GESTURE}... Standby")
                     time.sleep(1)
