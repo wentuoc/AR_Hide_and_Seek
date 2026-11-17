@@ -17,9 +17,9 @@ import torch
 
 DATA_DIRECTORY = Path(__file__).resolve().parent / "data"
 RAW_DIRECTORY = DATA_DIRECTORY / "raw"
-PROCESSED_DIRECTORY = DATA_DIRECTORY / "processed_new"
+PROCESSED_DIRECTORY = DATA_DIRECTORY / "processed"
 SPLITS_DIRECTORY = DATA_DIRECTORY / "splits"
-METADATA_DIRECTORY = DATA_DIRECTORY / "metadata_new"
+METADATA_DIRECTORY = DATA_DIRECTORY / "metadata"
 
 CSV_HEADERS = [
 	"sample_index",
@@ -37,7 +37,7 @@ def parse_arguments():
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument("--seed", type=int, default=42, help="Split random seed")
 	parser.add_argument(
-		"--test_set",
+		"--test-set",
 		type=lambda value: [item.strip() for item in value.split(",") if item.strip()],
 		default=None,
 		help="The datasets to be used as test set, passed as a comma-separated list",
@@ -145,6 +145,9 @@ def read_and_check_recording(path):
 	sample_indices = [record["sample_index"] for record in records]
 	if sample_indices != list(range(len(records))):
 		raise ValueError(f"Sample indices must be consecutive from zero: {path}")
+
+	if len(records) < 20:
+		raise ValueError(f"Number of samples is less than 20: {path}")
 
 	return records
 
@@ -285,7 +288,13 @@ def main():
 	recording_paths = discover_recordings()
 	recording_paths = rename_mismatched_recordings(recording_paths)
 
-	recordings = {path: read_and_check_recording(path) for path in recording_paths}
+	recordings = {}
+	for path in recording_paths:
+		try:
+			recordings[path] = read_and_check_recording(path)
+		except ValueError as e:
+			print(e)
+			
 	if args.test_set is None:
 		split_paths = split_recordings(recordings, args.seed)
 	else:
@@ -319,7 +328,7 @@ def main():
 	METADATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
 	write_meatadata(args, means, standard_deviations)
 
-	print(f"Processed {len(recording_paths)} recordings")
+	print(f"Processed {len(recordings)} recordings")
 	for split_name, paths in split_paths.items():
 		print(f"{split_name}: {len(paths)} recordings")
 
