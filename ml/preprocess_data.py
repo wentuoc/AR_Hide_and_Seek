@@ -30,7 +30,8 @@ CSV_HEADERS = [
 ]
 SENSOR_COLUMNS = CSV_HEADERS[2:]
 NORMALISED_COLUMNS = SENSOR_COLUMNS[:6]
-SPLIT_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
+# SPLIT_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
+SPLIT_RATIOS = {"train": 0.85, "test": 0.15}
 
 
 def parse_arguments():
@@ -175,7 +176,7 @@ def split_recordings(recordings, seed):
 		val_count = int(len(paths) * SPLIT_RATIOS["val"])
 
 		split_recordings_by_name["train"].extend(paths[:train_count])
-		split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
+		# split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
 		split_recordings_by_name["test"].extend(paths[train_count + val_count:])
 
 	return split_recordings_by_name
@@ -216,7 +217,7 @@ def split_train_val(recordings, seed, test_set: list):
 		val_count = int(len(paths) * SPLIT_RATIOS["val"] / (SPLIT_RATIOS["train"] + SPLIT_RATIOS["val"]))
 
 		split_recordings_by_name["train"].extend(paths[:train_count])
-		split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
+		# split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
 
 	for dataset_name in sorted(test_datasets):
 		split_recordings_by_name["test"].extend(datasets[dataset_name])
@@ -282,7 +283,6 @@ def write_meatadata(args, means, standard_deviations):
 
 
 def main():
-	
 	args = parse_arguments()
 
 	recording_paths = discover_recordings()

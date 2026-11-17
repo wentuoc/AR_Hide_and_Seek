@@ -17,7 +17,7 @@ CSV_HEADERS = [
 SENSOR_HEADERS = CSV_HEADERS[2:]
 
 RAW_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "raw"
-AUGMENTED_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "augmented"
+AUGMENTED_DATA_DIRECTORY = Path(__file__).resolve().parent / "data" / "augmented_new"
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Plot values from a CSV file.")

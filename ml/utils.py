@@ -11,6 +11,20 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from ml.models import (
+	GestureCNN,
+	GestureCNN_Large,
+	GestureCNN_Prelim,
+	GestureCNN_Small,
+)
+
+MODEL_TYPES = {
+	"standard": GestureCNN,
+	"prelim": GestureCNN_Prelim,
+	"small": GestureCNN_Small,
+	"large": GestureCNN_Large,
+}
+
 
 # Runtime and reproducibility helpers
 
@@ -20,28 +34,19 @@ def set_seed(seed):
 	torch.manual_seed(seed)
 
 
-def validate_device(device):
-	"""Raise an error when CUDA is requested but unavailable."""
-	if str(device) == "cuda" and not torch.cuda.is_available():
-		raise ValueError("CUDA was requested, but CUDA is not available")
-
-
 # Dataset and DataLoader helpers
 
 class GestureDataset(Dataset):
 	"""Dataset for manifest entries containing serialized 20x11 windows."""
 
-	def __init__(self, manifest_path, label_to_index=None):
+	def __init__(self, manifest_path, label_to_index=None, rows=None):
 		self.manifest_path = Path(manifest_path)
-		self.samples = []
+		self.samples = [] # A list of (augmented) data .pt paths and their labels
 
-		with self.manifest_path.open(newline="", encoding="utf-8") as file:
-			rows = list(csv.DictReader(file))
+		if rows is None:
+			rows = read_manifest(self.manifest_path)
 
-		if not rows:
-			raise ValueError(f"Manifest is empty: {self.manifest_path}")
-
-		labels = sorted({row["label"] for row in rows})
+		labels = sorted({row["label"] for row in rows}) # Default label to class index mapping is by alphabetical order
 		self.label_to_index = label_to_index or {
 			label: index for index, label in enumerate(labels)
 		}
@@ -49,21 +54,24 @@ class GestureDataset(Dataset):
 		for row in rows:
 			label = row["label"]
 			if label not in self.label_to_index:
-				raise ValueError(f"Label {label!r} is missing from label_to_index")
+				print(
+					f"Skipping label {label!r}: not present in label_to_index "
+					f"(manifest: {self.manifest_path})"
+				)
+				continue
 			self.samples.append({
 				"path": self._resolve_sample_path(row["path"]),
 				"label": label,
 			})
 
 	def _resolve_sample_path(self, path):
-		candidate = Path(path)
-		if candidate.is_absolute() and candidate.is_file():
-			return candidate
-
-		candidates = [candidate, self.manifest_path.parent / candidate]
-		for resolved_path in candidates:
-			if resolved_path.is_file():
-				return resolved_path
+		candidates = [
+			Path(path),
+			self.manifest_path.parent / path,
+		]
+		for candidate in candidates:
+			if candidate.is_file():
+				return candidate
 		raise FileNotFoundError(f"Could not find dataset sample: {path}")
 
 	def __len__(self):
@@ -83,81 +91,200 @@ class GestureDataset(Dataset):
 		return data, label
 
 
-def _labels_from_manifest(manifest_path):
+def read_manifest(manifest_path):
+	"""Read and validate a non-empty manifest."""
 	with Path(manifest_path).open(newline="", encoding="utf-8") as file:
-		return {row["label"] for row in csv.DictReader(file)}
+		rows = list(csv.DictReader(file))
+	if not rows:
+		raise ValueError(f"Manifest is empty: {manifest_path}")
+	return rows
 
 
-def load_label_mapping(label_map_path, manifest_path):
-	"""Load a saved label mapping or derive one from a manifest."""
-	if label_map_path is not None:
-		with Path(label_map_path).open(encoding="utf-8") as file:
-			return json.load(file)
-
-	return {
-		label: index
-		for index, label in enumerate(sorted(_labels_from_manifest(manifest_path)))
-	}
+def _labels_from_rows(rows):
+	"""Get all the labels in rows"""
+	return {row["label"] for row in rows}
 
 
-def load_source_files(manifest_path, separate_variants=False):
-	"""Return source identifiers, optionally treating variants as separate units."""
-	with Path(manifest_path).open(newline="", encoding="utf-8") as file:
-		rows = csv.DictReader(file)
-		if separate_variants:
-			return [
-				f"{row['source_file']}::{row['variant']}"
-				for row in rows
-			]
-		return [row["source_file"] for row in rows]
+def _grouped_kfold_rows(manifest_path, k_folds, seed):
+	"""Partition manifest rows by source recording into deterministic folds."""
+	rows = read_manifest(manifest_path)
+	groups_by_label = defaultdict(lambda: defaultdict(list))
+	labels_by_source = defaultdict(set)
+	for row in rows:
+		source_file = row.get("source_file")
+		if not source_file:
+			raise ValueError(
+				"Grouped K-fold validation requires a source_file column"
+			)
+		labels_by_source[source_file].add(row["label"])
+		groups_by_label[row["label"]][source_file].append(row)
+
+	if any(len(labels) > 1 for labels in labels_by_source.values()):
+		raise ValueError(
+			"Each source recording must have one label for grouped K-fold validation"
+		)
+
+	groups = [
+		source_file
+		for groups_by_source in groups_by_label.values()
+		for source_file in groups_by_source
+	]
+	if len(groups) < k_folds:
+		raise ValueError(
+			f"Cannot create {k_folds} folds from {len(groups)} source recordings"
+		)
+
+	generator = random.Random(seed)
+	fold_rows = [[] for _ in range(k_folds)]
+	for label in sorted(groups_by_label):
+		label_groups = list(groups_by_label[label].items())
+		generator.shuffle(label_groups)
+		for index, (_, group_rows) in enumerate(label_groups):
+			fold_rows[index % k_folds].extend(group_rows)
+
+	return fold_rows
 
 
-def create_dataloaders(
-		train_manifest="data/augmented/train/manifest.csv",
-		val_manifest="data/augmented/val/manifest.csv",
-		test_manifest=None,
-		batch_size=32,
-		num_workers=0,
+def load_source_files(
+		manifest_path,
+		separate_variants=False,
 		label_to_index=None,
 	):
-	"""Create loaders for whichever train, validation, and test manifests exist."""
-	manifest_paths = {
-		"train": train_manifest,
-		"val": val_manifest,
-		"test": test_manifest,
-	}
-	manifest_paths = {
-		name: Path(path)
-		for name, path in manifest_paths.items()
-		if path is not None
-	}
-	if not manifest_paths:
-		raise ValueError("At least one manifest must be provided")
+	"""Return source identifiers, optionally treating variants as separate units."""
+	rows = read_manifest(manifest_path)
+	if label_to_index is not None:
+		rows = [
+			row for row in rows
+			if row["label"] in label_to_index
+		]
+	if separate_variants:
+		return [
+			f"{row['source_file']}::{row['variant']}"
+			for row in rows
+		]
+	return [row["source_file"] for row in rows]
 
+
+def _create_manifest_datasets(manifest_paths, label_to_index):
+	manifest_rows = {
+		name: read_manifest(manifest_path)
+		for name, manifest_path in manifest_paths.items()
+	}
 	if label_to_index is None:
-		if "train" not in manifest_paths:
+		if "train" not in manifest_rows:
 			raise ValueError(
 				"label_to_index is required when no training manifest is provided"
 			)
 		label_to_index = {
 			label: index
 			for index, label in enumerate(
-				sorted(_labels_from_manifest(manifest_paths["train"]))
+				sorted(_labels_from_rows(manifest_rows["train"]))
 			)
 		}
 
-	for name, manifest_path in manifest_paths.items():
-		unknown_labels = _labels_from_manifest(manifest_path) - set(label_to_index)
+	for name, rows in manifest_rows.items():
+		unknown_labels = _labels_from_rows(rows) - set(label_to_index)
 		if unknown_labels:
-			raise ValueError(
-				f"{name} manifest contains labels absent from the label mapping: "
-				f"{sorted(unknown_labels)}"
+			print(
+				f"{name} manifest labels absent from the label mapping "
+				f"(skipping them): {sorted(unknown_labels)}"
 			)
+			manifest_rows[name] = [
+				row for row in rows
+				if row["label"] in label_to_index
+			]
 
 	datasets = {
-		name: GestureDataset(manifest_path, label_to_index)
-		for name, manifest_path in manifest_paths.items()
+		name: GestureDataset(
+			manifest_paths[name], label_to_index, rows=rows
+		)
+		for name, rows in manifest_rows.items()
 	}
+	return datasets, label_to_index
+
+
+def _create_kfold_datasets(
+		train_manifest,
+		label_to_index,
+		k_folds,
+		fold_index,
+		seed,
+	):
+	fold_rows = _grouped_kfold_rows(train_manifest, k_folds, seed)
+	if label_to_index is None:
+		labels = _labels_from_rows(
+			[row for rows in fold_rows for row in rows]
+		)
+		label_to_index = {
+			label: index for index, label in enumerate(sorted(labels))
+		}
+	all_rows = [row for rows in fold_rows for row in rows]
+	unknown_labels = _labels_from_rows(all_rows) - set(label_to_index)
+	if unknown_labels:
+		print(
+			f"K-fold manifest labels absent from the label mapping "
+			f"(skipping them): {sorted(unknown_labels)}"
+		)
+		fold_rows = [
+			[row for row in rows if row["label"] in label_to_index]
+			for rows in fold_rows
+		]
+	train_rows = [
+		row
+		for index, rows in enumerate(fold_rows)
+		if index != fold_index
+		for row in rows
+	]
+	datasets = {
+		"train": GestureDataset(
+			train_manifest, label_to_index, rows=train_rows
+		),
+		"val": GestureDataset(
+			train_manifest, label_to_index, rows=fold_rows[fold_index]
+		),
+	}
+	return datasets, label_to_index
+
+
+def create_dataloaders(
+		train_manifest="data/augmented/train/manifest.csv",
+		test_manifest=None,
+		batch_size=32,
+		num_workers=0,
+		label_to_index=None,
+		k_folds=None,
+		fold_index=0,
+		seed=42,
+	):
+	"""Create loaders from manifests or one grouped K-fold train/val split."""
+	if k_folds is not None:
+		if k_folds < 2:
+			raise ValueError("k_folds must be at least 2")
+		if not 0 <= fold_index < k_folds:
+			raise ValueError("fold_index must be between 0 and k_folds - 1")
+		datasets, label_to_index = _create_kfold_datasets(
+			train_manifest,
+			label_to_index,
+			k_folds,
+			fold_index,
+			seed,
+		)
+	else:
+		manifest_paths = {
+			"train": train_manifest,
+			"test": test_manifest,
+		}
+		manifest_paths = {
+			name: Path(path)
+			for name, path in manifest_paths.items()
+			if path is not None
+		}
+		if not manifest_paths:
+			raise ValueError("At least one manifest must be provided")
+		datasets, label_to_index = _create_manifest_datasets(
+			manifest_paths, label_to_index
+		)
+
 	return {
 		name: DataLoader(
 			dataset,
@@ -171,78 +298,49 @@ def create_dataloaders(
 
 # Model construction and weight loading
 
-class GestureCNN(nn.Module):
-	"""1D CNN for 20-sample windows with 11 sensor features per sample."""
+def create_cnn_model(
+		input_features=11,
+		num_classes=5,
+		dropout=0.3,
+		model_type="standard",
+	):
+	"""Create a named gesture-classification 1D CNN."""
+	try:
+		model_class = MODEL_TYPES[model_type]
+	except KeyError as error:
+		supported_models = ", ".join(sorted(MODEL_TYPES))
+		raise ValueError(
+			f"Unknown model type {model_type!r}; "
+			f"choose one of: {supported_models}"
+		) from error
 
-	def __init__(self, input_features=11, num_classes=5, dropout=0.3):
-		super().__init__()
-		self.input_features = input_features
-		self.num_classes = num_classes
-
-		self.features = nn.Sequential(
-			nn.Conv1d(input_features, 32, kernel_size=5, padding=2),
-			nn.BatchNorm1d(32),
-			nn.ReLU(),
-			nn.MaxPool1d(kernel_size=2),
-			nn.Conv1d(32, 64, kernel_size=3, padding=1),
-			nn.BatchNorm1d(64),
-			nn.ReLU(),
-			nn.MaxPool1d(kernel_size=2),
-			nn.Conv1d(64, 64, kernel_size=3, padding=1),
-			nn.BatchNorm1d(64),
-			nn.ReLU(),
-		)
-		self.global_average_pool = nn.AdaptiveAvgPool1d(1)
-		self.global_max_pool = nn.AdaptiveMaxPool1d(1)
-		self.classifier = nn.Sequential(
-			nn.Dropout(dropout),
-			nn.Linear(128, 64),
-			nn.ReLU(),
-			nn.Linear(64, num_classes),
-		)
-
-	def forward(self, inputs):
-		"""Return class logits for inputs shaped [batch, 20, 11]."""
-		if inputs.ndim != 3:
-			raise ValueError("inputs must have shape [batch, 20, 11]")
-		if inputs.shape[1:] != (20, self.input_features):
-			raise ValueError(
-				f"inputs must have shape [batch, 20, {self.input_features}]"
-			)
-
-		# Conv1d expects [batch, channels, sequence_length].
-		features = self.features(inputs.transpose(1, 2))
-		average_features = self.global_average_pool(features).flatten(1)
-		maximum_features = self.global_max_pool(features).flatten(1)
-		pooled_features = torch.cat((average_features, maximum_features), dim=1)
-		return self.classifier(pooled_features)
-
-	def predict_proba(self, inputs):
-		"""Return softmax probabilities without changing the training output."""
-		return torch.softmax(self(inputs), dim=1)
-
-
-def create_cnn_model(input_features=11, num_classes=5, dropout=0.3):
-	"""Create the gesture-classification 1D CNN."""
-	return GestureCNN(
-		input_features=input_features,
+	return model_class(
+		num_input_features=input_features,
 		num_classes=num_classes,
 		dropout=dropout,
 	)
 
 
-def load_model(weights_path, label_to_index, device):
+def load_model(weights_path, device):
 	"""Load either a training checkpoint or standalone model weights."""
 	checkpoint = torch.load(weights_path, map_location=device, weights_only=True)
 	if "model_state_dict" in checkpoint:
 		state_dict = checkpoint["model_state_dict"]
-		checkpoint_labels = checkpoint.get("label_to_index")
-		if checkpoint_labels is not None:
-			label_to_index = checkpoint_labels
+		label_to_index = checkpoint.get("label_to_index")
+		model_type = checkpoint.get("model_type", "standard")
 	else:
 		state_dict = checkpoint
+		label_to_index = None
+		model_type = "standard"
 
-	model = create_cnn_model(num_classes=len(label_to_index)).to(device)
+	if label_to_index is None:
+		raise ValueError(
+			"Checkpoint does not contain label_to_index; provide it separately"
+		)
+	model = create_cnn_model(
+		num_classes=len(label_to_index),
+		model_type=model_type,
+	).to(device)
 	model.load_state_dict(state_dict)
 	model.eval()
 	return model, label_to_index
@@ -250,9 +348,9 @@ def load_model(weights_path, label_to_index, device):
 
 # Training and recording-level evaluation
 
-def run_epoch(model, loader, loss_function, device, optimizer=None, description=None):
+def run_epoch(model, loader, loss_function, device, optimiser=None, description=None):
 	"""Run one training or evaluation epoch and return loss and accuracy."""
-	training = optimizer is not None
+	training = optimiser is not None
 	model.train(training)
 	total_loss = 0.0
 	correct = 0
@@ -266,14 +364,14 @@ def run_epoch(model, loader, loss_function, device, optimizer=None, description=
 			labels = labels.to(device)
 
 			if training:
-				optimizer.zero_grad(set_to_none=True)
+				optimiser.zero_grad(set_to_none=True)
 
 			logits = model(inputs)
 			loss = loss_function(logits, labels)
 
 			if training:
 				loss.backward()
-				optimizer.step()
+				optimiser.step()
 
 			batch_size = labels.size(0)
 			total_loss += loss.item() * batch_size
@@ -289,27 +387,30 @@ def run_epoch(model, loader, loss_function, device, optimizer=None, description=
 def evaluate_recordings(model, loader, source_files, label_to_index, device):
 	"""Evaluate windows and aggregate their predictions by source recording."""
 	loss_function = nn.CrossEntropyLoss()
-	window_loss, window_accuracy = run_epoch(
-		model,
-		loader,
-		loss_function,
-		device,
-		description="Evaluating windows",
-	)
-	recordings = defaultdict(lambda: {"probabilities": [], "label": None})
-	source_index = 0
+	if len(source_files) != len(loader.dataset):
+		raise ValueError("Source-file metadata does not match the DataLoader")
 
-	# Make a second, deterministic pass to retain per-recording probabilities.
+	recordings = defaultdict(lambda: {"probabilities": [], "label": None})
+	total_loss = 0.0
+	correct = 0
+	total_samples = 0
 	with torch.no_grad():
-		batches = tqdm(loader, desc="Aggregating recordings", leave=False, unit="batch")
+		model.eval()
+		batches = tqdm(loader, desc="Evaluating recordings", leave=False, unit="batch")
 		for inputs, labels in batches:
 			inputs = inputs.to(device)
 			labels = labels.to(device)
-			probabilities = torch.softmax(model(inputs), dim=1)
+			logits = model(inputs)
+			loss = loss_function(logits, labels)
+			probabilities = torch.softmax(logits, dim=1)
+
+			batch_size = labels.size(0)
+			total_loss += loss.item() * batch_size
+			correct += (logits.argmax(dim=1) == labels).sum().item()
+			total_samples += batch_size
 			batch_source_files = source_files[
-				source_index:source_index + labels.size(0)
+				total_samples - batch_size:total_samples
 			]
-			source_index += labels.size(0)
 
 			for index, source_file in enumerate(batch_source_files):
 				recording = recordings[source_file]
@@ -318,8 +419,8 @@ def evaluate_recordings(model, loader, source_files, label_to_index, device):
 
 	if not recordings:
 		raise ValueError("Evaluation manifest contains no samples")
-	if source_index != len(source_files):
-		raise ValueError("Source-file metadata does not match the DataLoader")
+	if total_samples == 0:
+		raise ValueError("DataLoader contains no samples")
 
 	class_count = len(label_to_index)
 	confusion_matrix = torch.zeros(
@@ -350,9 +451,9 @@ def evaluate_recordings(model, loader, source_files, label_to_index, device):
 	) / len(recordings)
 
 	return {
-		"window_loss": window_loss,
-		"window_accuracy": window_accuracy,
-		"window_count": len(source_files),
+		"window_loss": total_loss / total_samples,
+		"window_accuracy": correct / total_samples,
+		"window_count": total_samples,
 		"recording_count": len(results),
 		"recording_loss": recording_loss,
 		"recording_accuracy": correct_count / len(results),
@@ -363,36 +464,27 @@ def evaluate_recordings(model, loader, source_files, label_to_index, device):
 	}
 
 
-def save_checkpoint(path, epoch, model, optimizer, label_to_index, train_loss, val_loss):
-	"""Save model and optimizer state for resuming or later evaluation."""
+def save_checkpoint(path, epoch, model_type, model, optimiser, label_to_index, train_loss):
+	"""Save model and optimiser state for resuming or later evaluation."""
 	path = Path(path)
 	path.parent.mkdir(parents=True, exist_ok=True)
 	torch.save({
 		"epoch": epoch,
+		"model_type": model_type,
 		"model_state_dict": model.state_dict(),
-		"optimizer_state_dict": optimizer.state_dict(),
+		"optimiser_state_dict": optimiser.state_dict(),
 		"label_to_index": label_to_index,
 		"train_loss": train_loss,
-		"val_loss": val_loss,
 	}, path)
 
 
 # Console reporting helpers
 
-def print_epoch_metrics(
-		epoch,
-		total_epochs,
-		train_loss,
-		train_accuracy,
-		val_loss,
-		val_accuracy,
-	):
+def print_epoch_metrics(epoch, total_epochs, train_loss, train_accuracy):
 	print(
 		f"Epoch {epoch:03d}/{total_epochs:03d} | "
 		f"train loss: {train_loss:.4f}, "
-		f"val loss: {val_loss:.4f}, "
 		f"train accuracy: {train_accuracy:.2%}, "
-		f"val accuracy: {val_accuracy:.2%}"
 	)
 
 
