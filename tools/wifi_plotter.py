@@ -82,8 +82,7 @@ class Plotter:
 
     def add(self, fields):
         with self.lock:
-            self.samples.append([time.monotonic(), int(fields[0]),
-                                 *map(float, fields[2:])])
+            self.samples.append([time.monotonic(), *map(float, fields)])
 
     def snapshot(self):
         now = time.monotonic()

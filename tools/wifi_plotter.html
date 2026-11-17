@@ -12,7 +12,7 @@
 <section aria-live="polite"><h2>Glove setup</h2><p id="instruction">Connect to the glove to begin.</p><button id="calibrate" disabled>Start calibration</button> <button id="gyro" hidden>I'm ready — calibrate gyro</button><p id="command-error" role="alert"></p></section>
 <section><h2>IMU · 6 channels</h2><p>Acceleration (m/s²) and angular velocity (rad/s) · shared numeric axis, automatic range</p><div class="legend" id="imu-legend"></div><canvas id="imu" role="img" aria-label="Live graph of six IMU readings"></canvas></section>
 <section><h2>Flex sensors · 5 channels</h2><p>Normalized readings · Y-axis locked to 0–1</p><div class="legend" id="flex-legend"></div><canvas id="flex" role="img" aria-label="Live graph of five flex readings with fixed zero to one scale"></canvas></section>
-<section><h2>Raw flex sensors · 5 channels</h2><p>ADC counts before normalization · automatic range. ADS1015 and GPIO counts have different scales; GPIO retains its 32-read average.</p><div class="legend" id="raw-legend"></div><canvas id="raw" role="img" aria-label="Live graph of five raw flex sensor readings"></canvas></section>
+<section id="raw-section" hidden><h2>Raw flex sensors · 5 channels</h2><p>ADC counts before normalization · automatic range. ADS1015 and GPIO counts have different scales; GPIO retains its 32-read average.</p><div class="legend" id="raw-legend"></div><canvas id="raw" role="img" aria-label="Live graph of five raw flex sensor readings"></canvas></section>
 <p>Time axis: seconds ago, based on laptop receipt time. Pausing the view keeps CSV recording active.</p>
 </main>
 <script>
@@ -63,11 +63,11 @@ function draw(id,data,offset,count,fixed){
  for(let i=0;i<=5;i++){const value=min+(max-min)*i/5,yy=y(value);ctx.strokeStyle='#304058';ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();ctx.fillStyle='#b4c1d5';ctx.textAlign='right';ctx.fillText(fixed?value.toFixed(1):value.toFixed(2),left-9,yy+4);}
  for(let i=0;i<=5;i++){const xx=left+(right-left)*i/5;ctx.fillStyle='#b4c1d5';ctx.textAlign='center';ctx.fillText(String(Math.round(-seconds+seconds*i/5))+' s',xx,h-10);}
  ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
- for(let c=0;c<count;c++){ctx.strokeStyle=colors[c];ctx.lineWidth=1.8;ctx.beginPath();let prev=null;for(const s of samples){const contiguous=prev&&s[1]===((prev[1]+1)>>>0)&&s[0]-prev[0]<0.5;if(contiguous)ctx.lineTo(x(s[0]),y(s[offset+c]));else ctx.moveTo(x(s[0]),y(s[offset+c]));prev=s;}ctx.stroke();if(samples.length){const s=samples[samples.length-1];ctx.fillStyle=colors[c];ctx.beginPath();ctx.arc(x(s[0]),y(s[offset+c]),2.5,0,Math.PI*2);ctx.fill();}}
+ for(let c=0;c<count;c++){ctx.strokeStyle=colors[c];ctx.lineWidth=1.8;ctx.beginPath();let prev=null;for(const s of samples){const contiguous=prev&&s[0]-prev[0]<0.5;if(contiguous)ctx.lineTo(x(s[0]),y(s[offset+c]));else ctx.moveTo(x(s[0]),y(s[offset+c]));prev=s;}ctx.stroke();if(samples.length){const s=samples[samples.length-1];ctx.fillStyle=colors[c];ctx.beginPath();ctx.arc(x(s[0]),y(s[offset+c]),2.5,0,Math.PI*2);ctx.fill();}}
  ctx.restore();
  if(!samples.length){ctx.fillStyle='#aebbd0';ctx.textAlign='center';ctx.fillText('Waiting for sensor readings…',(left+right)/2,(top+bottom)/2);}
 }
-function render(data){shown=data;draw('imu',data,2,6,false);draw('flex',data,8,5,true);draw('raw',data,13,5,false);}
+function render(data){shown=data;draw('imu',data,1,6,false);draw('flex',data,7,5,true);const rawSamples=data.samples.filter(s=>s.length===17);document.getElementById('raw-section').hidden=!rawSamples.length;if(rawSamples.length)draw('raw',{...data,samples:rawSamples},12,5,false);}
 async function poll(){try{const response=await fetch('/data',{cache:'no-store',signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error('HTTP '+response.status);latest=await response.json();setupControls(latest.stage);const last=latest.samples.at(-1);const stale=latest.stage==='ready'&&last&&latest.now-last[0]>1;document.getElementById('status').textContent=latest.status+(stale?' · No recent readings':'')+(paused?' · View paused':'');if(!paused)render(latest);}catch(error){setupControls(null);document.getElementById('status').textContent='Receiver unavailable · retrying…';}finally{setTimeout(poll,100);}}
 render({now:0,samples:[]});poll();
 </script>
