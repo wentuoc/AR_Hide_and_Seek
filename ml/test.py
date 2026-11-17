@@ -5,17 +5,14 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
-from torch.utils.data import DataLoader
 
-from utils import (
-	GestureDataset,
-	load_label_mapping,
+from ml.utils import (
+	create_dataloaders,
 	load_model,
 	load_source_files,
 	print_metrics,
 	evaluate_recordings,
 	set_seed,
-	validate_device,
 )
 
 
@@ -27,16 +24,16 @@ def main():
 	validate_arguments(args)
 	set_seed(args.seed)
 	device = torch.device(args.device)
-	label_to_index = load_label_mapping(args.label_map, args.manifest)
-	model, label_to_index = load_model(args.weights, label_to_index, device)
-	# TODO: remove separate_variants=True once enough independent recordings exist.
+	model, label_to_index = load_model(args.weights, device)
+	print(label_to_index)
 	loader, source_files = load_data(args, label_to_index)
 	metrics = evaluate_recordings(
 		model, loader, source_files, label_to_index, device
 	)
 	print_metrics(metrics)
 	print_test_statistics(metrics, label_to_index)
-	plot_test_statistics(metrics, label_to_index, args.plot_path, args.show)
+	plot_path = args.weights.resolve().parent / "test_statistics.png"
+	plot_test_statistics(metrics, label_to_index, plot_path)
 
 
 def parse_arguments():
@@ -56,60 +53,32 @@ def parse_arguments():
 		default=ML_DIRECTORY / "outputs" / "final_weights.pt",
 		help="Final weights or a full training checkpoint.",
 	)
-	parser.add_argument(
-		"--label-map",
-		type=Path,
-		help="Optional JSON label-to-index mapping when weights do not contain one.",
-	)
 	parser.add_argument("--batch-size", type=int, default=32, help="Samples per batch.")
-	parser.add_argument(
-		"--num-workers",
-		type=int,
-		default=0,
-		help="DataLoader worker processes; use 0 on Windows for simplest execution.",
-	)
 	parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-	parser.add_argument(
-		"--device",
-		choices=["cpu", "cuda"],
-		default="cpu",
-		help="Torch device used for evaluation.",
-	)
-	parser.add_argument(
-		"--plot-path",
-		type=Path,
-		default=ML_DIRECTORY / "outputs" / "test_statistics.png",
-		help="Path for the generated statistics plot.",
-	)
-	parser.add_argument(
-		"--show",
-		action="store_true",
-		help="Display the plot after saving it.",
-	)
 	return parser.parse_args()
 
 
 def validate_arguments(args):
 	if args.batch_size <= 0:
 		raise ValueError("batch-size must be positive")
-	if args.num_workers < 0:
-		raise ValueError("num-workers cannot be negative")
 	if not args.manifest.is_file():
 		raise FileNotFoundError(f"Missing test manifest: {args.manifest}")
 	if not args.weights.is_file():
 		raise FileNotFoundError(f"Missing model weights: {args.weights}")
-	validate_device(args.device)
 
 
 def load_data(args, label_to_index):
-	dataset = GestureDataset(args.manifest, label_to_index)
-	loader = DataLoader(
-		dataset,
+	loaders, _ = create_dataloaders(
+		test_manifest=args.manifest,
 		batch_size=args.batch_size,
-		shuffle=False,
 		num_workers=args.num_workers,
+		label_to_index=label_to_index,
 	)
-	return loader, load_source_files(args.manifest, separate_variants=True)
+	return loaders["test"], load_source_files(
+		args.manifest,
+		separate_variants=True,
+		label_to_index=label_to_index,
+	)
 
 
 def print_test_statistics(metrics, label_to_index):
@@ -189,7 +158,7 @@ def mean_or_zero(values):
 	return sum(values) / len(values) if values else 0.0
 
 
-def plot_test_statistics(metrics, label_to_index, plot_path, show):
+def plot_test_statistics(metrics, label_to_index, plot_path):
 	index_to_label = invert_label_mapping(label_to_index)
 	results = metrics["results"]
 	class_indices = list(range(len(index_to_label)))
@@ -243,8 +212,7 @@ def plot_test_statistics(metrics, label_to_index, plot_path, show):
 	figure.tight_layout()
 	plot_path.parent.mkdir(parents=True, exist_ok=True)
 	figure.savefig(plot_path, dpi=150)
-	if show:
-		plt.show()
+	plt.show()
 	plt.close(figure)
 	print(f"Test statistics plot saved to {plot_path}")
 
