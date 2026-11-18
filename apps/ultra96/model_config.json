@@ -1,0 +1,64 @@
+{
+  "confirmed": true,
+  "sample_period_ms": 50,
+  "tolerance_ms": 15,
+  "stride": 5,
+  "feature_order": [
+    "ax",
+    "ay",
+    "az",
+    "gx",
+    "gy",
+    "gz",
+    "flex1",
+    "flex2",
+    "flex3",
+    "flex4",
+    "flex0"
+  ],
+  "offset": [
+    1.2778295278549194,
+    -0.2667144536972046,
+    7.90491247177124,
+    0.17746789753437042,
+    -0.05516936257481575,
+    -0.15538276731967926,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "divisor": [
+    3.8475325107574463,
+    4.23272180557251,
+    2.6154773235321045,
+    0.39480283856391907,
+    0.41661059856414795,
+    0.5847665071487427,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "labels": [
+    "click",
+    "gun",
+    "paint",
+    "pinch",
+    "resting",
+    "shoot",
+    "spawn"
+  ],
+  "gesture_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "notes": "AI owner must confirm feature order, training sample rate and normalization. Current offset/divisor are placeholders. For non-affine preprocessing, update prepare() in live_ai.py."
+}
