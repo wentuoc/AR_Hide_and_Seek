@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capstone sensor plotter</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101722;color:#e7edf7;font:15px system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}h1{font-size:24px;margin:0 0 6px}h2{font-size:18px;margin:0}p{color:#aebbd0;margin:6px 0 12px}.controls{display:flex;align-items:center;gap:12px}button,select{background:#25334a;color:#fff;border:1px solid #52627d;border-radius:6px;padding:8px}section{background:#172130;border:1px solid #304058;border-radius:10px;padding:16px;margin-top:18px}.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:13px;margin:10px 0}.legend span::before{content:'●';color:var(--color);margin-right:6px}canvas{width:100%;height:260px;display:block}#status{font-size:13px;color:#aebbd0}
+</style>
+<main>
+<header><div><h1>Capstone sensor plotter</h1><div id="status" role="status">Connecting to receiver…</div></div>
+<div class="controls"><label>Window <select id="window"><option value="10">10 seconds</option><option value="20">20 seconds</option><option value="30">30 seconds</option></select></label><button id="pause">Pause view</button></div></header>
+<section aria-live="polite"><h2>Glove setup</h2><p id="instruction">Connect to the glove to begin.</p><button id="calibrate" disabled>Start calibration</button> <button id="gyro" hidden>I'm ready — calibrate gyro</button><p id="command-error" role="alert"></p></section>
+<section><h2>Raw IMU · 6 channels</h2><p>Acceleration (m/s²) and angular velocity (rad/s) · shared numeric axis, automatic range</p><div class="legend" id="imu-legend"></div><canvas id="imu" role="img" aria-label="Live graph of six IMU readings"></canvas></section>
+<section><h2>Normalized IMU · 6 channels</h2><p>Z-score: (reading − mean) / standard deviation · dimensionless, automatic range</p><div class="legend" id="imu-normalized-legend"></div><canvas id="imu-normalized" role="img" aria-label="Live graph of six standardized IMU readings"></canvas></section>
+<section id="flex-section"><h2>Flex sensors · 5 channels</h2><p>Normalized readings · Y-axis locked to 0–1</p><div class="legend" id="flex-legend"></div><canvas id="flex" role="img" aria-label="Live graph of five flex readings with fixed zero to one scale"></canvas></section>
+<section id="raw-section"><h2>Raw flex sensors · 5 channels</h2><p>ADC counts before normalization · automatic range. ADS1015 and GPIO counts have different scales; GPIO retains its 32-read average.</p><div class="legend" id="raw-legend"></div><canvas id="raw" role="img" aria-label="Live graph of five raw flex sensor readings"></canvas></section>
+<p>Time axis: seconds ago, based on laptop receipt time. Pausing the view keeps CSV recording active.</p>
+</main>
+<script>
+const colors=['#65b5ff','#ffb454','#85dfad','#e19bff','#ff7f91','#e0de75'];
+const imuNames=['ax (m/s²)','ay (m/s²)','az (m/s²)','gx (rad/s)','gy (rad/s)','gz (rad/s)'];
+const flexNames=['A0','A1','A2','A3','GPIO / thumb'];
+for(const [id,names] of [['imu',imuNames],['imu-normalized',['ax','ay','az','gx','gy','gz']],['flex',flexNames],['raw',flexNames]]){
+ document.getElementById(id+'-legend').innerHTML=names.map((name,i)=>`<span style="--color:${colors[i]}">${name}</span>`).join('');
+}
+let paused=false,latest=null,shown=null;
+const instructions={
+ needs_calibration:'Connected — calibration needed. Put on the glove, then start calibration.',
+ flex_countdown:'Get ready to flex and straighten all fingers. Calibration starts in 3 seconds…',
+ flex:'Flex and straighten all fingers through their full range for 5 seconds.',
+ wait_gyro:'Rest your hand on a surface. When comfortable, click “I’m ready”, then keep the whole glove still.',
+ gyro:'Keep still — measuring gyro offsets. Please wait…',
+ ready:'Ready — readings are being recorded. You can recalibrate without disconnecting Wi-Fi.'
+};
+let commandPending=false;
+function setupControls(stage){
+ document.getElementById('instruction').textContent=instructions[stage]||'Waiting for glove status…';
+ const calibrate=document.getElementById('calibrate'),gyro=document.getElementById('gyro');
+ calibrate.textContent=stage==='ready'?'Recalibrate':'Start calibration';
+ calibrate.disabled=commandPending||!['needs_calibration','ready'].includes(stage);
+ gyro.hidden=stage!=='wait_gyro';gyro.disabled=commandPending;
+}
+async function sendCommand(path){
+ commandPending=true;setupControls(latest?.stage);
+ document.getElementById('command-error').textContent='';
+ try{const response=await fetch(path,{method:'POST',signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error();}
+ catch(error){document.getElementById('command-error').textContent='Could not send command. Check the connection and try again.';}
+ finally{setTimeout(()=>{commandPending=false;setupControls(latest?.stage);},1200);}
+}
+document.getElementById('calibrate').onclick=()=>sendCommand('/calibrate');
+document.getElementById('gyro').onclick=()=>sendCommand('/gyro');
+document.getElementById('pause').onclick=()=>{paused=!paused;document.getElementById('pause').textContent=paused?'Resume view':'Pause view';if(!paused&&latest)render(latest);};
+document.getElementById('window').onchange=()=>{if(shown)render(shown);};
+window.addEventListener('resize',()=>{if(shown)render(shown);});
+function draw(id,data,offset,count,fixed){
+ const canvas=document.getElementById(id),ctx=canvas.getContext('2d'),w=canvas.clientWidth,h=canvas.clientHeight,dpr=window.devicePixelRatio||1;
+ canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);ctx.scale(dpr,dpr);
+ const left=62,right=w-16,top=12,bottom=h-34,seconds=Number(document.getElementById('window').value);
+ const samples=data.samples.filter(s=>s[0]>=data.now-seconds);
+ const valid=value=>Number.isFinite(value)&&((id==='imu'||id==='imu-normalized')||value!==-1);
+ let min=0,max=1;
+ if(!fixed){
+  let low=Infinity,high=-Infinity;
+  for(const s of samples)for(let i=0;i<count;i++){
+   const value=s[offset+i];
+   if(valid(value)){low=Math.min(low,value);high=Math.max(high,value);}
+  }
+  if(Number.isFinite(low)){const pad=Math.max((high-low)*0.1,0.1);min=low-pad;max=high+pad;}
+ }
+ const x=t=>left+(t-(data.now-seconds))/seconds*(right-left),y=v=>bottom-(v-min)/(max-min)*(bottom-top);
+ ctx.font='12px system-ui';ctx.lineWidth=1;
+ for(let i=0;i<=5;i++){const value=min+(max-min)*i/5,yy=y(value);ctx.strokeStyle='#304058';ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();ctx.fillStyle='#b4c1d5';ctx.textAlign='right';ctx.fillText(fixed?value.toFixed(1):value.toFixed(2),left-9,yy+4);}
+ for(let i=0;i<=5;i++){const xx=left+(right-left)*i/5;ctx.fillStyle='#b4c1d5';ctx.textAlign='center';ctx.fillText(String(Math.round(-seconds+seconds*i/5))+' s',xx,h-10);}
+ ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
+ for(let c=0;c<count;c++){
+  ctx.strokeStyle=colors[c];ctx.lineWidth=1.8;ctx.beginPath();let prev=null;
+  for(const s of samples){
+   const value=s[offset+c];
+   // Missing flex readings break only this channel's line.
+   if(!valid(value)){prev=null;continue;}
+   const contiguous=prev&&s[0]-prev[0]<0.5;
+   if(contiguous)ctx.lineTo(x(s[0]),y(value));else ctx.moveTo(x(s[0]),y(value));
+   prev=s;
+  }
+  ctx.stroke();
+  const last=samples.at(-1);
+  if(last&&valid(last[offset+c])){
+   ctx.fillStyle=colors[c];ctx.beginPath();ctx.arc(x(last[0]),y(last[offset+c]),2.5,0,Math.PI*2);ctx.fill();
+  }
+ }
+ ctx.restore();
+ if(!samples.length){ctx.fillStyle='#aebbd0';ctx.textAlign='center';ctx.fillText('Waiting for sensor readings…',(left+right)/2,(top+bottom)/2);}
+}
+function render(data){
+ shown=data;
+ draw('imu',data,1,6,false);
+ draw('imu-normalized',data,17,6,false);
+ draw('flex',data,7,5,true);
+ draw('raw',data,12,5,false);
+}
+async function poll(){try{const response=await fetch('/data',{cache:'no-store',signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error('HTTP '+response.status);latest=await response.json();setupControls(latest.stage);const last=latest.samples.at(-1);const stale=latest.stage==='ready'&&last&&latest.now-last[0]>1;document.getElementById('status').textContent=latest.status+(stale?' · No recent readings':'')+(paused?' · View paused':'');if(!paused)render(latest);}catch(error){setupControls(null);document.getElementById('status').textContent='Receiver unavailable · retrying…';}finally{setTimeout(poll,100);}}
+render({now:0,samples:[]});poll();
+</script>
+</html>
