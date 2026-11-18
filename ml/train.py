@@ -64,7 +64,7 @@ def main():
 			training_parameters["learning_rate"],
 			writer,
 		)
-		write_model_config(label_to_index)
+		write_model_config(args, label_to_index)
 	finally:
 		writer.close()
 
@@ -192,10 +192,10 @@ def save_training_parameters(output_path, args, training_parameters, label_to_in
 	print(f"Training parameters saved to {output_path}")
 
 
-def write_model_config(label_to_index):
+def write_model_config(args, label_to_index):
 	"""Write runtime configuration using the trained labels and normalization."""
 
-	normalisation_path = ML_DIRECTORY / "data" / "metadata" / "normalisation.json"
+	normalisation_path = args.output_directory / "normalisation.json"
 	if not normalisation_path.is_file():
 		raise FileNotFoundError(f"Missing normalization metadata: {normalisation_path}")
 	with normalisation_path.open(encoding="utf-8") as file:

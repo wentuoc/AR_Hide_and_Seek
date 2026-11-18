@@ -15,11 +15,20 @@ data/
 *.npy
 *.npz
 
+# TensorBoard Outputs
+events.out.tfevents*
+
 # ML models
 *.pth
 *.pt
 *.onnx
+*.onnx.data
 *.xmodel
+
+# Outputs and Exports
+exports/
+outputs/
+archive/
 
 # FPGA
 *.bit

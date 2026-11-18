@@ -22,7 +22,7 @@ OUTPUT_ONNX_FILENAME = "gesture_cnn.onnx"
 
 def export_model(weights_path, output_dir, opset):
 	"""Load a project checkpoint and export its inference graph."""
-	model, label_to_index = load_model(weights_path, "cpu")
+	model, label_to_index, _ = load_model(weights_path, "cpu")
 	if not label_to_index:
 		raise ValueError("Checkpoint does not contain a non-empty label_to_index mapping")
 
