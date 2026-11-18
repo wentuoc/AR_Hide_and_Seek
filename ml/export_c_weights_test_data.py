@@ -23,13 +23,30 @@ from ml.utils import GestureCNN
 ML_DIRECTORY = Path(__file__).resolve().parent
 
 NFEATURES = 11
-NCLASSES = 8
 N_TEST = 20  # keep small: co-simulation runs these through RTL
 
 WEIGHTS_FILENAME = "weights.h"
 TEST_DATA_FILENAME = "test_data.h"
 
-# ------------------------------------------------------------------------------
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Export a trained PyTorch gesture CNN to HLS headers.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("--weights", required=True, help="Path to the trained PyTorch checkpoint.")
+    parser.add_argument(
+        "--test-data",
+        required=True,
+        help="Path to normalized input windows in (N, 11, 20) NumPy format.",
+    )
+    parser.add_argument(
+        "--export",
+        default=ML_DIRECTORY / "exports" / datetime.now().strftime("%Y%m%d_%H%M%S"),
+        help="Directory where weights.h and test_data.h will be written.",
+    )
+    args = parser.parse_args()
+    return args
 
 
 def fold_bn(conv, bn):
@@ -53,22 +70,27 @@ def emit(ctype, name, arr):
 
 
 def main(args):
-    pt_path = args.pt_path
-    windows_path = args.windows_path
+    weights = args.weights
+    test_data = args.test_data
     export_dir = Path(args.export)
     export_dir.mkdir(parents=True, exist_ok=False)
     weights_out = export_dir / WEIGHTS_FILENAME
     test_out = export_dir / TEST_DATA_FILENAME
-    
-    model = GestureCNN(NFEATURES, NCLASSES, 0)
-    model.load_state_dict(torch.load(pt_path, map_location="cpu")["model_state_dict"])
+
+    checkpoint = torch.load(weights, map_location="cpu")
+    label_to_index = checkpoint["label_to_index"]
+    model = GestureCNN(NFEATURES, len(label_to_index), 0)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()  # BatchNorm uses running stats, dropout off
 
     f = model.features
     c = model.classifier
     tensors = []
 
-    # Conv layers: PyTorch (COUT, CIN, K) -> HLS [K][CIN][COUT]
+    # Convolution layers
+    # Folds the BatchNorm into the convolution layer
+    # Transposes the convolution weights into HLS C++ Memory Layout
+    # PyTorch (COUT, CIN, K) -> HLS [K][CIN][COUT]
     for name_w, name_b, conv, bn in [
         ("W1", "B1", f[0], f[1]),
         ("W2", "B2", f[4], f[5]),
@@ -78,11 +100,15 @@ def main(args):
         tensors.append((name_w, np.transpose(w, (2, 1, 0)).copy()))
         tensors.append((name_b, b))
 
-    # Linear layers: PyTorch (OUT, IN) -> HLS [IN][OUT]
+    # Linear layers
+    # Transposes the weights
+    # PyTorch (OUT, IN) -> HLS [IN][OUT]
     for name_w, name_b, lin in [("WD1", "BD1", c[1]), ("WD2", "BD2", c[3])]:
         tensors.append((name_w, lin.weight.detach().numpy().T.copy()))
         tensors.append((name_b, lin.bias.detach().numpy()))
 
+    # Export folded and transposed weights to gesture_cnn.h
+    # Performs a cursory check that the weights do not exceed the fixed point precision
     print("Tensor ranges (wgt_t = ap_fixed<16,4> holds [-8, 8)):")
     text = '#ifndef WEIGHTS_H\n#define WEIGHTS_H\n#include "gesture_cnn.h"\n\n'
     for name, arr in tensors:
@@ -93,18 +119,18 @@ def main(args):
     text += "\n#endif\n"
     weights_out.write_text(text)
 
-    # Test vectors from the real PyTorch model (catches layout/concat-order mistakes).
-    x = torch.from_numpy(np.load(windows_path).astype(np.float32))[:N_TEST]  # (N, C, T)
+    # Test vectors from the real PyTorch model (catches layout/concat-order mistakes)
+    x = torch.from_numpy(np.load(test_data).astype(np.float32))[:N_TEST]  # (N, C, T)
     model_input = x.transpose(1, 2).contiguous()  # GestureCNN expects (N, T, C)
     with torch.no_grad():
         logits = model(model_input).numpy()
     preds = logits.argmax(axis=1)
 
     # Self-check: a float model rebuilt from the FOLDED weights must reproduce PyTorch's
-    # output. Also reveals the order in which your forward() concatenates the two pools.
+    # output
     import torch.nn.functional as F
 
-    def folded_forward(xin, order):
+    def folded_forward(xin):
         h = xin
         for i, (conv, bn) in enumerate([(f[0], f[1]), (f[4], f[5]), (f[8], f[9])]):
             w, b = fold_bn(conv, bn)
@@ -113,24 +139,21 @@ def main(args):
             if i < 2:
                 h = F.max_pool1d(h, 2)
         avg, mx = h.mean(dim=2), h.amax(dim=2)
-        feat = torch.cat([avg, mx] if order == "avg_max" else [mx, avg], dim=1)
+        feat = torch.cat([avg, mx], dim=1)
         h = F.relu(F.linear(feat, c[1].weight, c[1].bias))
         return F.linear(h, c[3].weight, c[3].bias)
 
     print("Self-check (folded weights vs. PyTorch model):")
-    errs = {}
     with torch.no_grad():
-        for order in ("avg_max", "max_avg"):
-            errs[order] = (folded_forward(x, order) - torch.from_numpy(logits)).abs().max().item()
-            print(f"  concat order [{order}]: max logit error {errs[order]:.2e}")
-    if errs["avg_max"] < 1e-4:
-        print("  OK: matches the hardware feature order [avg | max].")
-    elif errs["max_avg"] < 1e-4:
-        print("  ACTION NEEDED: your model concatenates [max | avg]. In gesture_cnn.h, swap")
-        print("  feat[c] and feat[C + c] in global_pool() before running HLS.")
-    else:
-        print("  MISMATCH: neither order matches. The architecture differs from the HLS design")
-        print("  (kernel sizes, padding, extra layers?). Do not continue until this is resolved.")
+        max_logit_error = (
+            folded_forward(x) - torch.from_numpy(logits)
+        ).abs().max().item()
+    print(f"  max logit error: {max_logit_error:.2e}")
+    if max_logit_error >= 1e-4:
+        raise RuntimeError(
+            "Folded weights do not match the PyTorch model; "
+            "check the HLS architecture or folded convolution implementation."
+        )
 
     x_flat = x.transpose(1, 2).reshape(len(x), -1).numpy()  # time-major (T, C) flatten
 
@@ -145,19 +168,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Export a trained PyTorch gesture CNN to HLS headers."
-    )
-    parser.add_argument("--pt-path", required=True, help="Path to the trained PyTorch checkpoint.")
-    parser.add_argument(
-        "--windows-path",
-        required=True,
-        help="Path to normalized input windows in (N, 11, 20) NumPy format.",
-    )
-    parser.add_argument(
-        "--export",
-        default=ML_DIRECTORY / "exports" / datetime.now().strftime("%Y%m%d_%H%M%S"),
-        help="Directory where weights.h and test_data.h will be written.",
-    )
-    args = parser.parse_args()
+    args = parse_arguments()
     main(args)

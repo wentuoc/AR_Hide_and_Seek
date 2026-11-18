@@ -9,7 +9,6 @@ The exported contract is float32 ``[batch, 20, 11]`` to float32
 import argparse
 from datetime import datetime
 import importlib
-import os
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +64,7 @@ def verify_export(weights_path, output_dir, label_to_index):
 		print("ONNX Runtime not installed; skipped numerical verification")
 		return
 
-	model, _ = load_model(weights_path, "cpu")
+	model, _, _ = load_model(weights_path, "cpu")
 	sample = np.random.default_rng(0).standard_normal((1, 20, 11)).astype(np.float32)
 	with torch.no_grad():
 		expected = model(torch.from_numpy(sample)).numpy()

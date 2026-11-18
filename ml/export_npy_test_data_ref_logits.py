@@ -16,7 +16,6 @@ from ml.utils import GestureCNN, GestureDataset
 ML_DIRECTORY = Path(__file__).resolve().parent
 
 NFEATURES = 11
-NCLASSES = 8
 TEST_DATA_FILENAME = "test_data.npy"
 REF_LOGITS_FILENAME = "ref_logits.npy"
 
@@ -56,7 +55,8 @@ def create_reference_logits(weights_path, data, export_path):
 			f"Weights file not found: {weights_path}"
 		) from error
 
-	model = GestureCNN(NFEATURES, NCLASSES, dropout=0)
+	label_to_index = checkpoint['label_to_index']
+	model = GestureCNN(NFEATURES, len(label_to_index), dropout=0)
 	model.load_state_dict(checkpoint["model_state_dict"])
 	model.eval()
 
@@ -85,7 +85,7 @@ def parse_arguments():
 		"--output",
 		type=Path,
 		default=ML_DIRECTORY / "exports" / datetime.now().strftime("%Y%m%d_%H%M%S"),
-		help="Output location",
+		help="Output location.",
 	)
 	parser.add_argument(
 		"--weights",
