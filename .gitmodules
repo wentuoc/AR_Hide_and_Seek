@@ -1,0 +1,3 @@
+[submodule "hardware/capstone"]
+	path = hardware/capstone
+	url = https://github.com/Roma637/AR_Hide_And_Seek_hardware.git
