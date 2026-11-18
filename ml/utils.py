@@ -1,7 +1,7 @@
 """Shared data, model, training, and evaluation utilities."""
 
+import ast
 import csv
-import json
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from pytorch_ood.loss import EnergyRegularizedLoss
 from tqdm.auto import tqdm
 
 from ml.models import (
@@ -24,7 +25,6 @@ MODEL_TYPES = {
 	"small": GestureCNN_Small,
 	"large": GestureCNN_Large,
 }
-
 
 # Runtime and reproducibility helpers
 
@@ -54,6 +54,10 @@ class GestureDataset(Dataset):
 		for row in rows:
 			label = row["label"]
 			if label not in self.label_to_index:
+				print(
+					f"Skipping label {label!r}: not present in label_to_index "
+					f"(manifest: {self.manifest_path})"
+				)
 				print(
 					f"Skipping label {label!r}: not present in label_to_index "
 					f"(manifest: {self.manifest_path})"
@@ -97,6 +101,21 @@ def read_manifest(manifest_path):
 		rows = list(csv.DictReader(file))
 	if not rows:
 		raise ValueError(f"Manifest is empty: {manifest_path}")
+	for row in rows:
+		if "label" not in row:
+			raise ValueError(f"Manifest is missing a label column: {manifest_path}")
+		raw_label = row["label"].strip()
+		if raw_label.startswith("{") and raw_label.endswith("}"):
+			try:
+				labels = ast.literal_eval(raw_label)
+			except (SyntaxError, ValueError):
+				continue
+			if isinstance(labels, (set, frozenset)):
+				if len(labels) != 1:
+					raise ValueError(
+						f"Manifest row contains multiple labels: {manifest_path}"
+					)
+				row["label"] = next(iter(labels))
 	return rows
 
 
@@ -247,7 +266,7 @@ def _create_kfold_datasets(
 
 
 def create_dataloaders(
-		train_manifest="data/augmented/train/manifest.csv",
+		train_manifest="ml/data/augmented/train/manifest.csv",
 		test_manifest=None,
 		batch_size=32,
 		num_workers=0,
@@ -314,6 +333,7 @@ def create_cnn_model(
 			f"choose one of: {supported_models}"
 		) from error
 
+	print(f"Creating model of type {model_type} with {input_features} input features and {num_classes} output classes")
 	return model_class(
 		num_input_features=input_features,
 		num_classes=num_classes,
@@ -343,7 +363,7 @@ def load_model(weights_path, device):
 	).to(device)
 	model.load_state_dict(state_dict)
 	model.eval()
-	return model, label_to_index
+	return model, label_to_index, model_type
 
 
 # Training and recording-level evaluation
@@ -376,6 +396,59 @@ def run_epoch(model, loader, loss_function, device, optimiser=None, description=
 			batch_size = labels.size(0)
 			total_loss += loss.item() * batch_size
 			correct += (logits.argmax(dim=1) == labels).sum().item()
+			total_samples += batch_size
+
+	if total_samples == 0:
+		raise ValueError("DataLoader contains no samples")
+
+	return total_loss / total_samples, correct / total_samples
+
+
+def run_epoch_energy(
+        model,
+        loader,
+        loss_function,
+        device,
+        optimiser=None,
+        energy_threshold=None,
+        description=None,
+):
+	"""Run one training or evaluation epoch and return loss and accuracy."""
+	if energy_threshold is None:
+		energy_threshold = -7
+	training = optimiser is not None
+	model.train(training)
+	total_loss = 0.0
+	correct = 0
+	total_samples = 0
+
+	gradient_context = torch.enable_grad() if training else torch.no_grad()
+	with gradient_context:
+		batches = tqdm(loader, desc=description, leave=False, unit="batch")
+		for inputs, labels in batches:
+			inputs = inputs.to(device)
+			labels = labels.to(device)
+
+			if training:
+				optimiser.zero_grad(set_to_none=True)
+
+			logits = model(inputs)
+			loss = loss_function(logits, labels)
+
+			if training:
+				loss.backward()
+				optimiser.step()
+
+			batch_size = labels.size(0)
+			total_loss += loss.item() * batch_size
+			predicted_classes = logits.argmax(dim=1)
+			energy_scores = -torch.logsumexp(logits, dim=1)
+			predicted_classes = torch.where(
+				energy_scores > energy_threshold,
+				torch.full_like(predicted_classes, -1),
+				predicted_classes,
+			)
+			correct += (predicted_classes == labels).sum().item()
 			total_samples += batch_size
 
 	if total_samples == 0:
@@ -449,6 +522,145 @@ def evaluate_recordings(model, loader, source_files, label_to_index, device):
 		).item()
 		for recording in recordings.values()
 	) / len(recordings)
+	
+	return {
+		"window_loss": total_loss / total_samples,
+		"window_accuracy": correct / total_samples,
+		"window_count": total_samples,
+		"recording_count": len(results),
+		"recording_loss": recording_loss,
+		"recording_accuracy": correct_count / len(results),
+		"correct_count": correct_count,
+		"incorrect_count": len(results) - correct_count,
+		"results": results,
+		"confusion_matrix": confusion_matrix
+	}
+
+
+def evaluate_recordings_energy(
+		model,
+		loader,
+		source_files,
+		label_to_index,
+		device,
+		energy_threshold=-7,
+):
+	"""Evaluate windows and aggregate their predictions by source recording."""
+	loss_function = EnergyRegularizedLoss()
+	if len(source_files) != len(loader.dataset):
+		raise ValueError("Source-file metadata does not match the DataLoader")
+
+	recordings = defaultdict(lambda: {
+		"probabilities": [],
+		"energy_scores": [],
+		"label": None,
+	})
+	total_loss = 0.0
+	correct = 0
+	total_samples = 0
+	with torch.no_grad():
+		model.eval()
+		batches = tqdm(loader, desc="Evaluating recordings", leave=False, unit="batch")
+		for inputs, labels in batches:
+			inputs = inputs.to(device)
+			labels = labels.to(device)
+			logits = model(inputs)
+			loss = loss_function(logits, labels)
+			probabilities = torch.softmax(logits, dim=1)
+			predicted_classes = logits.argmax(dim=1)
+			energy_scores = -torch.logsumexp(logits, dim=1)
+			predicted_classes = torch.where(
+				energy_scores > energy_threshold,
+				torch.full_like(predicted_classes, -1),
+				predicted_classes,
+			)
+
+			batch_size = labels.size(0)
+			total_loss += loss.item() * batch_size
+			correct += (predicted_classes == labels).sum().item()
+			total_samples += batch_size
+			batch_source_files = source_files[
+				total_samples - batch_size:total_samples
+			]
+
+			for index, source_file in enumerate(batch_source_files):
+				recording = recordings[source_file]
+				recording["probabilities"].append(probabilities[index].cpu())
+				recording["energy_scores"].append(energy_scores[index].cpu())
+				recording["label"] = labels[index].item()
+
+	if not recordings:
+		raise ValueError("Evaluation manifest contains no samples")
+	if total_samples == 0:
+		raise ValueError("DataLoader contains no samples")
+
+	class_count = len(label_to_index)
+	confusion_matrix = torch.zeros(
+		(class_count, class_count), dtype=torch.long
+	)
+	results = []
+	ood_index = class_count - 1
+	for source_file, recording in recordings.items():
+		average_probabilities = torch.stack(recording["probabilities"]).mean(dim=0)
+		average_energy = torch.stack(recording["energy_scores"]).mean().item()
+		true_label = recording["label"]
+		predicted_label = (
+			-1
+			if average_energy > energy_threshold
+			else average_probabilities.argmax().item()
+		)
+		confidence = average_probabilities.max().item()
+		true_index = ood_index if true_label == -1 else true_label
+		predicted_index = ood_index if predicted_label == -1 else predicted_label
+		confusion_matrix[true_index, predicted_index] += 1
+		results.append({
+			"source_file": source_file,
+			"true_label": true_label,
+			"predicted_label": predicted_label,
+			"confidence": confidence,
+			"energy_score": average_energy,
+			"correct": predicted_label == true_label,
+		})
+
+	correct_count = sum(result["correct"] for result in results)
+	id_recordings = [
+		recording
+		for recording in recordings.values()
+		if recording["label"] != -1
+	]
+	recording_loss = sum(
+		-torch.log(
+			torch.stack(recording["probabilities"]).mean(dim=0)[recording["label"]]
+				.clamp_min(1e-8)
+		).item()
+		for recording in id_recordings
+	) / len(id_recordings) if id_recordings else 0.0
+
+	energy_groups = {
+		"id_energy": [
+			result["energy_score"]
+			for result in results
+			if result["true_label"] != -1
+		],
+		"ood_energy": [
+			result["energy_score"]
+			for result in results
+			if result["true_label"] == -1
+		],
+	}
+	energy_statistics = {}
+	for name, scores in energy_groups.items():
+		if scores:
+			score_tensor = torch.tensor(scores)
+			energy_statistics[name] = {
+				"count": len(scores),
+				"mean": score_tensor.mean().item(),
+				"min": score_tensor.min().item(),
+				"max": score_tensor.max().item(),
+				"std": score_tensor.std(unbiased=False).item(),
+			}
+		else:
+			energy_statistics[name] = {"count": 0}
 
 	return {
 		"window_loss": total_loss / total_samples,
@@ -461,6 +673,8 @@ def evaluate_recordings(model, loader, source_files, label_to_index, device):
 		"incorrect_count": len(results) - correct_count,
 		"results": results,
 		"confusion_matrix": confusion_matrix,
+		"energy_threshold": energy_threshold,
+		**energy_statistics,
 	}
 
 
@@ -496,3 +710,17 @@ def print_metrics(metrics):
 	print(f"Window accuracy: {metrics['window_accuracy']:.2%}")
 	print(f"Recording loss: {metrics['recording_loss']:.4f}")
 	print(f"Recording accuracy: {metrics['recording_accuracy']:.2%}")
+	if "id_energy" in metrics and "ood_energy" in metrics:
+		print(f"Energy threshold: {metrics['energy_threshold']:.4f}")
+		for name, key in (("In-distribution", "id_energy"), ("Out-of-distribution", "ood_energy")):
+			statistics = metrics[key]
+			if statistics["count"] == 0:
+				print(f"{name} energy: no recordings")
+				continue
+			print(
+				f"{name} energy: count={statistics['count']}, "
+				f"mean={statistics['mean']:.4f}, "
+				f"min={statistics['min']:.4f}, "
+				f"max={statistics['max']:.4f}, "
+				f"std={statistics['std']:.4f}"
+			)
