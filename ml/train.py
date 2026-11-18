@@ -23,7 +23,8 @@ ML_DIRECTORY = Path(__file__).resolve().parent
 MODEL_CONFIG_PATH = ML_DIRECTORY / "data" / "metadata" / "model_config.json"
 
 # Hard-coded, final label_to_index
-label_to_index = {'back': 0, 'click': 1, 'drop': 2, 'grab': 3, 'gun': 4, 'paint': 5, 'shoot': 6, 'resting': 7}
+# label_to_index = {'back': 0, 'click': 1, 'drop': 2, 'grab': 3, 'gun': 4, 'paint': 5, 'shoot': 6, 'resting': 7}
+label_to_index = {'back': 0, 'click': 1, 'drop': 2, 'grab': 3, 'gun': 4, 'paint': 5, 'shoot': 6}
 
 
 def main():
@@ -31,7 +32,7 @@ def main():
 	args = parse_arguments()
 	validate_arguments(args)
 	set_seed(args.seed)
-	device = torch.device(args.device)
+	device = torch.device("cpu")
 	training_parameters = load_training_parameters(args.optuna_study)
 	loaders, label_to_index = create_dataloaders(
 		train_manifest=args.train_manifest,
@@ -43,6 +44,12 @@ def main():
 
 	args.output_directory.mkdir(parents=True, exist_ok=True)
 	args.log_directory.mkdir(parents=True, exist_ok=True)
+	save_training_parameters(
+		args.output_directory / "training_parameters.json",
+		args,
+		training_parameters,
+		label_to_index,
+	)
 	writer = SummaryWriter(log_dir=args.log_directory)
 	try:
 		train_model(
@@ -77,7 +84,7 @@ def parse_arguments():
 	parser.add_argument(
 		"--optuna-study",
 		type=Path,
-		default=ML_DIRECTORY / "outputs" / "optuna_study.json",
+		default=None,
 		help="Optional Optuna study JSON containing best training parameters.",
 	)
 	parser.add_argument(
@@ -165,10 +172,28 @@ def create_training_components(label_to_index, training_parameters, device):
 	return model, loss_function, optimiser
 
 
+def save_training_parameters(output_path, args, training_parameters, label_to_index):
+	"""Save the resolved model and training configuration as JSON."""
+	parameters = {
+		"seed": args.seed,
+		"epochs": args.epochs,
+		"checkpoint_every": args.checkpoint_every,
+		"train_manifest": str(args.train_manifest),
+		"optuna_study": str(args.optuna_study),
+		"log_directory": str(args.log_directory),
+		"output_directory": str(args.output_directory),
+		"label_to_index": label_to_index,
+		"loss_function": "CrossEntropyLoss",
+		**training_parameters,
+	}
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	with output_path.open("w", encoding="utf-8") as file:
+		json.dump(parameters, file, indent=2)
+	print(f"Training parameters saved to {output_path}")
+
+
 def write_model_config(label_to_index):
 	"""Write runtime configuration using the trained labels and normalization."""
-	if "resting" not in label_to_index or label_to_index["resting"] != 7:
-		raise ValueError("The resting label must be assigned to gesture ID 7")
 
 	normalisation_path = ML_DIRECTORY / "data" / "metadata" / "normalisation.json"
 	if not normalisation_path.is_file():
@@ -266,6 +291,7 @@ def train_model(
 		"label_to_index": label_to_index,
 		"model_type": model_type
 	}, final_weights_path)
+	
 	print(f"Final weights saved to {final_weights_path}")
 
 

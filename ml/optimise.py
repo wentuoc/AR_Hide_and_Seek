@@ -29,6 +29,8 @@ MODEL_TYPES = {
     "large": GestureCNN_Large,
 }
 
+# Hard-coded, final label_to_index (without resting)
+label_to_index = {'back': 0, 'click': 1, 'drop': 2, 'grab': 3, 'gun': 4, 'paint': 5, 'shoot': 6}
 
 def main():
     args = parse_arguments()
@@ -65,7 +67,7 @@ def parse_arguments():
         "--train-manifest",
         type=Path,
         default=ML_DIRECTORY / "data" / "augmented" / "train" / "manifest.csv",
-        help="Path to the train manifest (default: ml/data/augmented/train/manifest.csv)"
+        help="Path to the train manifest"
     )
     # parser.add_argument(
     #     "--val-manifest",
@@ -75,12 +77,12 @@ def parse_arguments():
     parser.add_argument(
         "--output",
         type=Path,
-        default=ML_DIRECTORY / "outputs" / "optuna_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
-        help="Output directory (default: ml/outputs/optuna_[datetime])"
+        default=ML_DIRECTORY / "outputs" / "optuna" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+        help="Output directory"
     )
     parser.add_argument("--trials", type=int, default=30, help="Number of Optuna trials.")
     parser.add_argument("--epochs", type=int, default=30, help="Maximum training epochs per trial.")
-    parser.add_argument("--folds", type=int, default=5, help="Number of grouped cross-validation folds.")
+    parser.add_argument("--folds", type=int, default=4, help="Number of grouped cross-validation folds.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
 
@@ -97,6 +99,8 @@ def validate_arguments(args):
 
 
 def objective(trial, args, device):
+    global label_to_index
+
     # Hyperparameters for dataloaders
     batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
     fold_loaders = []
@@ -107,6 +111,7 @@ def objective(trial, args, device):
             k_folds=args.folds,
             fold_index=fold_index,
             seed=args.seed,
+            label_to_index=label_to_index
         )
         fold_loaders.append(loaders)
 
@@ -170,6 +175,7 @@ def objective(trial, args, device):
 
 
 def save_study(study, output_path):
+    output_path = output_path.with_suffix(".json")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
         "best_value": study.best_value,
