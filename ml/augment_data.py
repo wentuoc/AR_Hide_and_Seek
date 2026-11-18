@@ -1,4 +1,9 @@
-"""Create fixed-length training windows and sensor augmentations."""
+"""
+Create fixed-length training windows and sensor augmentations, and manifests required for training.
+By default, only augments the training set. To create manifests for testing without augmenting the test
+set, set --copies 0.
+To produce only one window per sample, use --window-start 5 --stride 20
+"""
 
 import argparse
 import csv
@@ -23,12 +28,12 @@ MOTION_COLUMN_COUNT = 6
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=PROCESSED_DIRECTORY / "train", help="Input path (default: processed/train)")
-    parser.add_argument("--output", type=Path, default=AUGMENTED_DIRECTORY / "train", help="Output path (default: augmented/train)")
-    parser.add_argument("--window-start", type=int, default=0, help="The starting sample number of the window (default: 0)")
-    parser.add_argument("--stride", type=int, default=10, help="Stride to use when windowing (default: 10)")
-    parser.add_argument("--copies", type=int, default=2, help="Number of augmented copies produced from one window (default: 2)")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter,)
+    parser.add_argument("--input", type=Path, default=PROCESSED_DIRECTORY / "train", help="Input path")
+    parser.add_argument("--output", type=Path, default=AUGMENTED_DIRECTORY / "train", help="Output path")
+    parser.add_argument("--window-start", type=int, default=0, help="The starting sample number of the window")
+    parser.add_argument("--stride", type=int, default=10, help="Stride to use when windowing")
+    parser.add_argument("--copies", type=int, default=2, help="Number of augmented copies produced from one window")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -125,7 +130,10 @@ def read_processed_recording(path):
         reader = csv.DictReader(file)
         rows = list(reader)
 
-    label = {row["label"] for row in rows} # Assuming the label is constant for each sample
+    labels = {row["label"] for row in rows}
+    if len(labels) != 1:
+        raise ValueError(f"Recording must contain exactly one label: {path}")
+    label = next(iter(labels))
     sequence = torch.tensor(
         [[float(row[column]) for column in CSV_HEADERS[2:]] for row in rows],
         dtype=torch.float32,

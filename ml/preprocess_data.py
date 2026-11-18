@@ -173,11 +173,12 @@ def split_recordings(recordings, seed):
 		paths = grouped_recordings[label]
 		generator.shuffle(paths)
 		train_count = int(len(paths) * SPLIT_RATIOS["train"])
-		val_count = int(len(paths) * SPLIT_RATIOS["val"])
+		# val_count = int(len(paths) * SPLIT_RATIOS["val"])
 
 		split_recordings_by_name["train"].extend(paths[:train_count])
+		split_recordings_by_name["test"].extend(paths[train_count:])
 		# split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
-		split_recordings_by_name["test"].extend(paths[train_count + val_count:])
+		# split_recordings_by_name["test"].extend(paths[train_count + val_count:])
 
 	return split_recordings_by_name
 
@@ -213,8 +214,9 @@ def split_train_val(recordings, seed, test_set: list):
 	for label in sorted(grouped_recordings):
 		paths = grouped_recordings[label]
 		generator.shuffle(paths)
-		train_count = int(len(paths) * SPLIT_RATIOS["train"] / (SPLIT_RATIOS["train"] + SPLIT_RATIOS["val"]))
-		val_count = int(len(paths) * SPLIT_RATIOS["val"] / (SPLIT_RATIOS["train"] + SPLIT_RATIOS["val"]))
+		train_count = int(len(paths))
+		# train_count = int(len(paths) * SPLIT_RATIOS["train"] / (SPLIT_RATIOS["train"] + SPLIT_RATIOS["val"]))
+		# val_count = int(len(paths) * SPLIT_RATIOS["val"] / (SPLIT_RATIOS["train"] + SPLIT_RATIOS["val"]))
 
 		split_recordings_by_name["train"].extend(paths[:train_count])
 		# split_recordings_by_name["val"].extend(paths[train_count:train_count + val_count])
@@ -269,8 +271,8 @@ def write_recording(path, records):
 			])
 			
 
-def write_meatadata(args, means, standard_deviations):
-    statistics = {
+def write_meatadata(args, means, standard_deviations, test_set):
+	statistics = {
 		"normalized_columns": NORMALISED_COLUMNS,
 		"unchanged_columns": SENSOR_COLUMNS[len(NORMALISED_COLUMNS):],
 		"mean": dict(zip(NORMALISED_COLUMNS, means.tolist())),
@@ -278,8 +280,10 @@ def write_meatadata(args, means, standard_deviations):
 		"split_ratios": SPLIT_RATIOS,
 		"seed": args.seed,
 	}
-    with (METADATA_DIRECTORY / "normalisation.json").open("w", encoding="utf-8") as file:
-     json.dump(statistics, file, indent=2)
+	if test_set:
+		statistics["split_ratios"] = f"Fixed test set: {test_set}"
+	with (METADATA_DIRECTORY / "normalisation.json").open("w", encoding="utf-8") as file:
+	 json.dump(statistics, file, indent=2)
 
 
 def main():
@@ -326,7 +330,7 @@ def main():
 				])
 
 	METADATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
-	write_meatadata(args, means, standard_deviations)
+	write_meatadata(args, means, standard_deviations, args.test_set)
 
 	print(f"Processed {len(recordings)} recordings")
 	for split_name, paths in split_paths.items():

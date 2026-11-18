@@ -23,8 +23,8 @@ def main():
 	args = parse_arguments()
 	validate_arguments(args)
 	set_seed(args.seed)
-	device = torch.device(args.device)
-	model, label_to_index = load_model(args.weights, device)
+	device = torch.device("cpu")
+	model, label_to_index, _ = load_model(args.weights, device)
 	print(label_to_index)
 	loader, source_files = load_data(args, label_to_index)
 	metrics = evaluate_recordings(
@@ -69,9 +69,10 @@ def validate_arguments(args):
 
 def load_data(args, label_to_index):
 	loaders, _ = create_dataloaders(
+		train_manifest=None,
 		test_manifest=args.manifest,
 		batch_size=args.batch_size,
-		num_workers=args.num_workers,
+		num_workers=0,
 		label_to_index=label_to_index,
 	)
 	return loaders["test"], load_source_files(
