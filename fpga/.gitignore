@@ -1,0 +1,47 @@
+export*/
+
+# Vivado project and generated outputs
+ai_accel/
+.Xil/
+*.xpr
+*.xpr.user
+*.xise
+*.runs/
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.srcs/
+*.sdk/
+*.local/
+
+# Vitis HLS generated project and solution outputs
+gesture_cnn_prj/*
+!gesture_cnn_prj/src/
+!gesture_cnn_prj/src/**
+solution*/
+csim/
+csynth.rpt
+csynth.xml
+csynth_design_size.rpt
+csynth_design_size.xml
+
+# FPGA tool reports, logs, and generated binaries
+*.jou
+*.log
+*.str
+*.rpt
+*.xml
+*.dcp
+*.bit
+*.bin
+*.xsa
+*.ltx
+*.pb
+*.vds
+
+# Editor and OS metadata
+.vscode/
+.DS_Store
+Thumbs.db
